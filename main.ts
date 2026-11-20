@@ -1,15 +1,16 @@
 // Token Radar's program (Node 22, standard library only).
 //
-// It reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits the power-law
-// value curve to the snapshot's live tokens, scores every rankable pre-token protocol, writes the
-// ranked board to /output/board.json, and copies this repository's dashboard/ and screenshots/ to
-// /output. Last, it writes /output/dossier.json, the summary the judge reads, with the vendored
-// make.fun library.
+// It reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits the
+// power-law value curve to the snapshot's live tokens, scores every rankable pre-token
+// protocol, writes the ranked board to /output/board.json, and copies this repository's
+// dashboard/ and screenshots/ to /output. Last, it writes /output/dossier.json, the summary
+// the judge reads, with the vendored make.fun library.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
 // and dashboard/app.js read /output/data.js, which this program writes from the same board. The model
-// is radar-2: a power law fitted at run time to the live tokens in the snapshot, not a multiple
-// carried in. Every run of the program on the same snapshot writes the same bytes.
+// is radar-3: a power law fitted at run time to the live tokens in the snapshot, not a multiple
+// carried in, backtested across five seeds, plus a data-derived reason to farm each row.
+// Every run of the program on the same snapshot writes the same bytes.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
@@ -91,7 +92,7 @@ for (const row of board) verdicts[row.farm.verdict]++;
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: fitted log(mcap) = ${fit.intercept} + ${fit.slope} * log(tvl) on ${fit.n_live} live tokens, R2 ${fit.r_squared}, 5-fold CV median log error ${fit.cv_median_log_error}\n` +
+    `token radar: fitted log(mcap) = ${fit.intercept} + ${fit.slope} * log(tvl) on ${fit.n_live} live tokens, R2 ${fit.r_squared}, 5-fold CV median log error ${fit.cv_median_log_error} (seed 42), ${fit.cv_median_across_seeds} across 5 seeds [${fit.cv_median_range[0]}..${fit.cv_median_range[1]}]\n` +
     `token radar: verdicts Farm ${verdicts.Farm}, Thin ${verdicts.Thin}, Skip ${verdicts.Skip}; total implied $${radar.total_implied_usd.toLocaleString('en-US')}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

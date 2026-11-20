@@ -1,9 +1,9 @@
-// Verify the token-radar output against every gate limit from competition.yaml.
+// Verify the token-radar v2 output against every gate limit from competition.yaml.
 // Usage: node verify-gate.mjs   (run from the repo dir)
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const OUT = '/home/hatch/workspace/makefun/token-radar-01/out';
+const OUT = '/home/hatch/workspace/makefun/token-radar-01-v2/out';
 const SNAP = '/home/hatch/workspace/makefun/token-radar-01-kit/input/snapshot.json';
 let pass = 0, fail = 0;
 function check(name, ok, detail) {
@@ -38,13 +38,13 @@ for (const r of rows) {
   if (!Array.isArray(s) || s.length < 3 || s.length > 12) { stepsOk = false; stepsBad++; continue; }
   for (const step of s) if (typeof step !== 'string' || step.trim() !== step || step.length < 20 || step.length > 600) { stepsOk = false; stepsBad++; break; }
 }
-check('farm_steps 3..12, each 20..600 chars trimmed', stepsOk, stepsBad ? stepsBad + ' rows bad' : 'all 198 rows');
+check('farm_steps 3..12, each 20..600 chars trimmed', stepsOk, stepsBad ? stepsBad + ' rows bad' : 'all ' + rows.length + ' rows');
 // Trap check: whole-word wrapped/staked/staking (so "restaking" — a legitimate restaking
 // primitive like EigenLayer — is not a false positive), or a name that is itself a live token.
 const liveNames = new Set(snap.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd !== undefined).map((p) => p.name.toLowerCase()));
 const trap = rows.filter((r) => /\bwrapped\b|\bstaked\b|\bstaking\b/.test(r.slug) || liveNames.has(r.name.toLowerCase()));
 check('no wrapped/staked/bridged product of a live token ranked', trap.length === 0, trap.length ? trap.map((r) => r.slug).join(', ') : 'none');
-check('#1 is Steakhouse Financial', rows[0].slug === 'steakhouse-financial', rows[0].slug + ' $' + rows[0].implied_value_usd.toLocaleString());
+check('every row has a non-empty edge sentence', rows.every((r) => typeof r.edge === 'string' && r.edge.trim().length >= 20), rows.filter((r) => typeof r.edge !== 'string' || r.edge.trim().length < 20).length + ' rows lack one');
 check('all rows have a farm plan + verdict', rows.every((r) => r.farm && ['Farm', 'Thin', 'Skip'].includes(r.farm.verdict) && typeof r.farm.net_usd_per_hour === 'number'));
 
 console.log('== dashboard/ ==');
@@ -53,6 +53,7 @@ let dashBytes = 0;
 for (const f of dashFiles) dashBytes += statSync(join(OUT, 'dashboard', f)).size;
 check('dashboard <= 400 files', dashFiles.length <= 400, dashFiles.length + ' files');
 check('dashboard <= 4 MiB', dashBytes <= 4 * 1024 * 1024, dashBytes + ' bytes');
+check('dashboard source <= 65536 bytes (dossier text cap)', dashBytes <= 65536, dashBytes + ' bytes');
 check('has index.html', dashFiles.includes('index.html'));
 check('has >= 1 .css', dashFiles.some((f) => f.endsWith('.css')));
 check('has >= 1 .js', dashFiles.some((f) => f.endsWith('.js')));
@@ -64,8 +65,6 @@ for (const f of dashFiles) {
   if (f.endsWith('.js') && /(?:import|from)\s+["']https?:\/\//.test(text)) extUrl = f + ' (js import)';
 }
 check('no http(s):// in HTML attrs, CSS, or JS imports', extUrl === null, extUrl || 'clean');
-const dashSource = dashFiles.reduce((n, f) => n + statSync(join(OUT, 'dashboard', f)).size, 0);
-console.log('  info  dashboard source total: ' + dashSource + ' bytes (dossier text cap is 65536)');
 
 console.log('== screenshots/ ==');
 const shots = readdirSync(join(OUT, 'screenshots'));
@@ -93,6 +92,9 @@ console.log('== data.js ==');
 check('data.js exists', existsSync(join(OUT, 'data.js')));
 const dataJs = readFileSync(join(OUT, 'data.js'), 'utf8');
 check('data.js sets window.RADAR', dataJs.includes('window.RADAR'));
+const data = JSON.parse(dataJs.replace(/^window\.RADAR=/, '').replace(/;\s*$/, ''));
+check('data.js scatter has 128 live points', Array.isArray(data.scatter) && data.scatter.length === 128, (data.scatter || []).length + ' points');
+check('data.js model_version radar-3', data.model_version === 'radar-3', data.model_version);
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

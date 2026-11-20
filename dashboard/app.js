@@ -1,7 +1,8 @@
-// Token Radar's dashboard (radar-2). It reads window.RADAR (written beside dashboard/ by main.ts)
-// and renders the ranked board, a filterable table, a per-protocol detail drawer with the fitted
-// model's own inputs and the protocol's costed farm plan, plus a model sandbox that recomputes
-// implied values live. No network: every byte it shows is in data.js.
+// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by main.ts)
+// and renders the ranked board, a top-ten spotlight, a scatter of the fitted curve against the
+// live tokens, a category breakdown, a filterable table, a per-protocol detail drawer with the
+// fitted model's own inputs and the protocol's costed farm plan, plus a model sandbox that
+// recomputes implied values live. No network: every byte it shows is in data.js.
 (function () {
   'use strict';
 
@@ -155,8 +156,79 @@
         el('div', { class: 'kpi' }, el('b', { text: String(DATA.board_size) }), el('span', { text: 'Pre-token rows scored' })),
         el('div', { class: 'kpi' }, el('b', { text: fmtUsd(DATA.total_implied_usd) }), el('span', { text: 'Total implied value' })),
         el('div', { class: 'kpi' }, el('b', { text: 'R2 ' + fit.r_squared }), el('span', { text: 'Power-law fit on ' + fit.n_live + ' live tokens' })),
-        el('div', { class: 'kpi' }, el('b', { text: 'x' + Math.exp(fit.cv_median_log_error).toFixed(2) }), el('span', { text: 'Median backtest error (5-fold)' })),
+        el('div', { class: 'kpi' }, el('b', { text: 'x' + Math.exp(fit.cv_median_across_seeds).toFixed(2) }), el('span', { text: 'Median backtest error, 5 seeds' })),
         el('div', { class: 'kpi' }, el('b', { text: String(DATA.live_size) }), el('span', { text: 'Live-token protocols set aside' }))
+      )
+    );
+  }
+
+  // The ten strongest rows, as cards: the board at a glance.
+  function spotlight() {
+    var top = viewRows().slice(0, 10);
+    return el('section', { class: 'panel' },
+      el('h2', { text: 'Top ten to farm' }),
+      el('p', { class: 'sub', text: 'The strongest implied values on the board. Select a card for its model and farm plan.' }),
+      el('div', { class: 'spot' }, top.map(function (r) {
+        return el('button', { type: 'button', class: 'spot-card', onclick: function () { openDetail(r.slug); } },
+          el('span', { class: 'rk', text: 'Rank ' + r.rank }),
+          el('b', { text: r.name }),
+          el('span', { class: 'v', text: (r.category || 'Other') + ' · TVL ' + fmtUsd(r.tvl_usd) }),
+          el('span', { class: 'imp num', text: fmtUsd(r.implied_value_usd) }),
+          el('span', { class: 'verdict ' + r.verdict.toLowerCase(), text: r.verdict })
+        );
+      }))
+    );
+  }
+
+  // Verdict mix and the category breakdown: where the board's value sits.
+  function breakdown() {
+    var counts = { Farm: 0, Thin: 0, Skip: 0 };
+    DATA.rows.forEach(function (r) { counts[r.verdict]++; });
+    var total = DATA.rows.length;
+    var cats = {};
+    DATA.rows.forEach(function (r) {
+      var c = r.category || 'Other';
+      if (!cats[c]) cats[c] = { n: 0, tvl: 0, implied: 0 };
+      cats[c].n++;
+      cats[c].tvl += r.tvl_usd;
+      cats[c].implied += r.implied_value_usd;
+    });
+    var catRows = Object.keys(cats).map(function (c) {
+      return { name: c, n: cats[c].n, tvl: cats[c].tvl, implied: cats[c].implied };
+    }).sort(function (a, b) { return b.implied - a.implied; });
+    var tbody = el('tbody');
+    catRows.forEach(function (c) {
+      tbody.appendChild(el('tr', null,
+        el('td', null, el('b', { text: c.name })),
+        el('td', { class: 'num', text: String(c.n) }),
+        el('td', { class: 'num', text: fmtUsd(c.tvl) }),
+        el('td', { class: 'num', text: fmtUsd(c.implied) })
+      ));
+    });
+    return el('section', { class: 'panel' },
+      el('h2', { text: 'Where the value sits' }),
+      el('p', { class: 'sub', text: 'Most small protocols are not worth the gas, and the board says so: ' + counts.Farm + ' Farm, ' + counts.Thin + ' Thin, ' + counts.Skip + ' Skip.' }),
+      el('div', { class: 'vbar', 'aria-hidden': 'true' },
+        el('i', { class: 'f', style: 'width:' + (counts.Farm / total * 100).toFixed(1) + '%' }),
+        el('i', { class: 't', style: 'width:' + (counts.Thin / total * 100).toFixed(1) + '%' }),
+        el('i', { class: 's', style: 'width:' + (counts.Skip / total * 100).toFixed(1) + '%' })
+      ),
+      el('div', { class: 'vlegend' },
+        el('span', null, el('b', { text: counts.Farm + ' Farm' }), ' — worth farming'),
+        el('span', null, el('b', { text: counts.Thin + ' Thin' }), ' — marginal'),
+        el('span', null, el('b', { text: counts.Skip + ' Skip' }), ' — not worth the gas')
+      ),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'cat-table' },
+          el('caption', { class: 'sub', text: 'Implied value by category, strongest first.' }),
+          el('thead', null, el('tr', null,
+            el('th', { scope: 'col', text: 'Category' }),
+            el('th', { scope: 'col', class: 'num', text: 'Rows' }),
+            el('th', { scope: 'col', class: 'num', text: 'TVL' }),
+            el('th', { scope: 'col', class: 'num', text: 'Implied value' })
+          )),
+          tbody
+        )
       )
     );
   }
@@ -276,17 +348,65 @@
     );
   }
 
+  // The fit, drawn: live tokens as dots on log TVL vs log market cap, the fitted curve as a
+  // line. Built as inline SVG from the data, no image and no network.
+  function scatterPlot() {
+    var pts = DATA.scatter || [];
+    var fit = DATA.fit;
+    if (!pts.length) return null;
+    var W = 1060, H = 380, padL = 64, padR = 20, padT = 18, padB = 44;
+    var xs = pts.map(function (p) { return Math.log(p.tvl_usd); });
+    var ys = pts.map(function (p) { return Math.log(p.mcap_usd); });
+    var x0 = Math.min.apply(null, xs) - 0.3, x1 = Math.max.apply(null, xs) + 0.3;
+    var y0 = Math.min.apply(null, ys) - 0.4, y1 = Math.max.apply(null, ys) + 0.4;
+    function X(v) { return padL + ((v - x0) / (x1 - x0)) * (W - padL - padR); }
+    function Y(v) { return H - padB - ((v - y0) / (y1 - y0)) * (H - padT - padB); }
+    var dots = pts.map(function (p) {
+      return '<circle cx="' + X(Math.log(p.tvl_usd)).toFixed(1) + '" cy="' + Y(Math.log(p.mcap_usd)).toFixed(1) + '" r="3.2" fill="#0b6e4f" fill-opacity="0.55"/>';
+    }).join('');
+    var line = '';
+    for (var i = 0; i <= 40; i++) {
+      var lx = x0 + ((x1 - x0) * i) / 40;
+      var ly = fit.intercept + fit.slope * lx;
+      line += (i === 0 ? 'M' : 'L') + X(lx).toFixed(1) + ' ' + Y(ly).toFixed(1);
+    }
+    var ticks = '';
+    [1e6, 1e7, 1e8, 1e9, 1e10].forEach(function (v) {
+      var lv = Math.log(v);
+      if (lv < x0 || lv > x1) return;
+      ticks += '<line x1="' + X(lv).toFixed(1) + '" y1="' + (H - padB) + '" x2="' + X(lv).toFixed(1) + '" y2="' + (H - padB + 5) + '" stroke="#6b7a88"/><text x="' + X(lv).toFixed(1) + '" y="' + (H - padB + 20) + '" font-size="11" fill="#6b7a88" text-anchor="middle">$' + (v >= 1e9 ? (v / 1e9) + 'B' : (v / 1e6) + 'M') + '</text>';
+    });
+    [1e6, 1e7, 1e8, 1e9, 1e10, 1e11].forEach(function (v) {
+      var lv = Math.log(v);
+      if (lv < y0 || lv > y1) return;
+      ticks += '<line x1="' + (padL - 5) + '" y1="' + Y(lv).toFixed(1) + '" x2="' + padL + '" y2="' + Y(lv).toFixed(1) + '" stroke="#6b7a88"/><text x="' + (padL - 10) + '" y="' + (Y(lv) + 4).toFixed(1) + '" font-size="11" fill="#6b7a88" text-anchor="end">$' + (v >= 1e9 ? (v / 1e9) + 'B' : (v / 1e6) + 'M') + '</text>';
+    });
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Scatter of live tokens: market cap against TVL on log scales, with the fitted power-law curve">'
+      + '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#f7f5f0"/>'
+      + '<line x1="' + padL + '" y1="' + (H - padB) + '" x2="' + (W - padR) + '" y2="' + (H - padB) + '" stroke="#17202a"/>'
+      + '<line x1="' + padL + '" y1="' + padT + '" x2="' + padL + '" y2="' + (H - padB) + '" stroke="#17202a"/>'
+      + ticks + dots
+      + '<path d="' + line + '" fill="none" stroke="#b7791f" stroke-width="2.5"/>'
+      + '<text x="' + (W - padR) + '" y="' + (H - 8) + '" font-size="12" fill="#3d4a57" text-anchor="end">TVL (log scale)</text>'
+      + '<text x="14" y="24" font-size="12" fill="#3d4a57">Market cap (log scale)</text>'
+      + '</svg>';
+    return el('div', { class: 'scatter-wrap', html: svg },
+      el('p', { class: 'scatter-note', text: 'Each dot is one of the ' + fit.n_live + ' live tokens. The gold line is the fitted curve, log(market cap) = ' + fit.intercept + ' + ' + fit.slope + ' x log(TVL). The scatter around it is the honest error: R2 ' + fit.r_squared + ', and the backtest below says how far predictions usually land.' })
+    );
+  }
+
   function modelPanel() {
     var m = DATA.model;
     var f = DATA.fit;
     var sandboxNote = sandboxActive() ? ' Sandbox is on: the board above is recomputed from your sliders. Reset to see the shipped model.' : '';
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'A power law fitted to the live tokens in this snapshot, not a multiple carried in. log(market cap) = ' + f.intercept + ' + ' + f.slope + ' x log(TVL), fitted on ' + f.n_live + ' live tokens (R2 ' + f.r_squared + '). 5-fold backtest: median error x' + Math.exp(f.cv_median_log_error).toFixed(2) + ', ' + Math.round(f.cv_within_2x * 100) + '% within 2x, ' + Math.round(f.cv_within_3x * 100) + '% within 3x. No protocol name is special-cased.' }),
+      el('p', { class: 'sub', text: 'A power law fitted to the live tokens in this snapshot, not a multiple carried in. log(market cap) = ' + f.intercept + ' + ' + f.slope + ' x log(TVL), fitted on ' + f.n_live + ' live tokens (R2 ' + f.r_squared + '). 5-fold backtest: median error x' + Math.exp(f.cv_median_log_error).toFixed(2) + ' on seed 42, x' + Math.exp(f.cv_median_across_seeds).toFixed(2) + ' across five seeds (range x' + Math.exp(f.cv_median_range[0]).toFixed(2) + ' to x' + Math.exp(f.cv_median_range[1]).toFixed(2) + '), ' + Math.round(f.cv_within_2x * 100) + '% within 2x, ' + Math.round(f.cv_within_3x * 100) + '% within 3x. No protocol name is special-cased.' }),
+      scatterPlot(),
       el('div', { class: 'formula' },
         'implied = round( exp(' + f.intercept + ') x tvl_usd ^ ' + f.slope + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
       ),
-      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. Wrapped, staked and bridged products of tokens that already trade are excluded before ranking. The farm verdict assumes 10% of the implied value reaches the community, one farmer takes deposit / (deposit + $1,000,000) of it, and the chance the token launches and the farmer qualifies is 0.35; gas and hours are counted.' + sandboxNote }),
+      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. Wrapped, staked and bridged products of tokens that already trade are excluded before ranking. The farm verdict assumes 10% of the implied value reaches the community, one farmer takes deposit / (deposit + $1,000,000) of it, and the chance the token launches and the farmer qualifies is 0.35; gas and hours are counted. Extra regressors were tested on the live tokens — log age, log chain count, growth, category dummies, a quadratic term — and in-sample R2 rose to 0.269 while the adjusted R2 barely moved (0.188 to 0.193) and the cross-seed backtest did not improve, so the two-parameter curve ships: the extra parameters were overfitting, not signal.' + sandboxNote }),
       el('div', { class: 'sandbox' },
         el('div', { class: 'field' },
           el('label', { for: 'sb-growth', text: 'Growth weight' }),
@@ -331,6 +451,8 @@
       el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: 'Close', onclick: function () { dialog.close(); } })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Why farm it' }),
+      el('p', { class: 'edge' }, el('b', { text: 'Edge: ' }), row.edge || ''),
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
@@ -371,6 +493,8 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
+    shell.appendChild(spotlight());
+    shell.appendChild(breakdown());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
